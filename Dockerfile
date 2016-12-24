@@ -37,6 +37,7 @@ RUN sudo apt-get update && sudo apt-get install -y build-essential && sudo apt-g
 RUN wget http://download.redis.io/releases/redis-stable.tar.gz
 RUN tar xvzf redis-stable.tar.gz
 RUN cd redis-stable && make && sudo make install && cd utils && sudo ./install_server.sh
+RUN sudo rm -rf /var/run/redis_6379.pid
 
 COPY start_script.sh /home/grumpycat/
 RUN sudo chown grumpycat.grumpycat /home/grumpycat/start_script.sh && sudo chmod 755 /home/grumpycat/start_script.sh
