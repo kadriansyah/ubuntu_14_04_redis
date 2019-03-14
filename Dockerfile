@@ -1,48 +1,87 @@
-# image name: kadriansyah/ubuntu_14_04_redis:v1
-FROM ubuntu:14.04
-MAINTAINER Kiagus Arief Adriansyah <kadriansyah@gmail.com>
+# image name: kadriansyah/ubuntu_16_04_redis:v1
+FROM  ubuntu:16.04
+LABEL version="1.0"
+LABEL maintainer="Kiagus Arief Adriansyah <kadriansyah@gmail.com>"
 
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+# add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
+RUN groupadd -r redis && useradd -r -g redis redis
 
-# creating user grumpycat
-RUN useradd -ms /bin/bash grumpycat
-RUN gpasswd -a grumpycat sudo
+# grab gosu for easy step-down from root
+# https://github.com/tianon/gosu/releases
+ENV GOSU_VERSION 1.10
+RUN set -ex; \
+	\
+	fetchDeps=" \
+		ca-certificates \
+		dirmngr \
+		gnupg \
+		wget \
+	"; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends $fetchDeps; \
+	rm -rf /var/lib/apt/lists/*; \
+	\
+	dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
+	wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch"; \
+	wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc"; \
+	export GNUPGHOME="$(mktemp -d)"; \
+	gpg --batch --keyserver ha.pool.sks-keyservers.net --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
+	gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
+	rm -r "$GNUPGHOME" /usr/local/bin/gosu.asc; \
+	chmod +x /usr/local/bin/gosu; \
+	gosu nobody true;
+	# \
+	# apt-get purge -y --auto-remove $fetchDeps 
 
-# Enable passwordless sudo for users under the "sudo" group
-RUN sed -i.bkp -e 's/%sudo\s\+ALL=(ALL\(:ALL\)\?)\s\+ALL/%sudo ALL=NOPASSWD:ALL/g' /etc/sudoers
+ENV REDIS_VERSION 5.0.3
+ENV REDIS_DOWNLOAD_URL http://download.redis.io/releases/redis-5.0.3.tar.gz
+ENV REDIS_DOWNLOAD_SHA e290b4ddf817b26254a74d5d564095b11f9cd20d8f165459efa53eb63cd93e02
 
-# su as grumpycat
-USER grumpycat
-WORKDIR /home/grumpycat
+# for redis-sentinel see: http://redis.io/topics/sentinel
+RUN set -ex; \
+	\
+	buildDeps=' \
+		ca-certificates \
+		wget \
+		\
+		gcc \
+		libc6-dev \
+		make \
+	'; \
+	apt-get update; \
+	apt-get install -y $buildDeps --no-install-recommends; \
+	rm -rf /var/lib/apt/lists/*; \
+	\
+	wget -O redis.tar.gz "$REDIS_DOWNLOAD_URL"; \
+	echo "$REDIS_DOWNLOAD_SHA *redis.tar.gz" | sha256sum -c -; \
+	mkdir -p /usr/src/redis; \
+	tar -xzf redis.tar.gz -C /usr/src/redis --strip-components=1; \
+	rm redis.tar.gz; \
+	\
+# disable Redis protected mode [1] as it is unnecessary in context of Docker
+# (ports are not automatically exposed when running inside Docker, but rather explicitly by specifying -p / -P)
+# [1]: https://github.com/antirez/redis/commit/edd4d555df57dc84265fdfb4ef59a4678832f6da
+	grep -q '^#define CONFIG_DEFAULT_PROTECTED_MODE 1$' /usr/src/redis/src/server.h; \
+	sed -ri 's!^(#define CONFIG_DEFAULT_PROTECTED_MODE) 1$!\1 0!' /usr/src/redis/src/server.h; \
+	grep -q '^#define CONFIG_DEFAULT_PROTECTED_MODE 0$' /usr/src/redis/src/server.h; \
+# for future reference, we modify this directly in the source instead of just supplying a default configuration flag because apparently "if you specify any argument to redis-server, [it assumes] you are going to specify everything"
+# see also https://github.com/docker-library/redis/issues/4#issuecomment-50780840
+# (more exactly, this makes sure the default behavior of "save on SIGTERM" stays functional by default)
+	\
+	make -C /usr/src/redis -j "$(nproc)"; \
+	make -C /usr/src/redis install; \
+	\
+	rm -r /usr/src/redis; \
+	\
+	apt-get purge -y --auto-remove $buildDeps
 
-# Add Public Key to New Remote User
-RUN mkdir .ssh && chmod 700 .ssh
-RUN echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDfji/gkqLV5YAC2UFuE4OK3XeGtCGzWdRUYpByVVk4MHiVseLq2gmi5MN+A8k6a4xYX4knse2Ps94Md4WfcA2dHjykLs5vqmK+CqLa+OI7Ls4C9LmY/S0RgQz+Fq4WO28vVwDjje3yG+1q5mP42y45sR5i9U0sF4KOVXI+gsysOZqJPmKEFBuFYrM7qxrMMj2raKw00Mqfw0e9o/n+5ycl/YPr7gN9OqzDAmI0Wkr1441zjpk7ygrjsW7tSKeP0HXRCb8yeE0rLXEmhO1HVa7NEzkCEknZT9GlqkxM1ZcBFZszOCsy2x2ZRuIcccFNYUDhdKAgv0xJNOyqpl3tvxPN kadriansyah@192.168.1.7" > /home/grumpycat/.ssh/authorized_keys
-RUN chmod 600 .ssh/authorized_keys
+RUN mkdir /data && chown redis:redis /data
+VOLUME /data
+WORKDIR /data
 
-# configure sshd
-RUN sudo apt-get update && sudo apt-get install -y openssh-server
-RUN sudo sed -i 's/Port 22/Port 3006/' /etc/ssh/sshd_config
-RUN sudo sed -i 's/PermitRootLogin without-password/PermitRootLogin no/' /etc/ssh/sshd_config
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["docker-entrypoint.sh"]
 
-# install wget
-RUN sudo apt-get update && sudo apt-get install -y wget
-
-# Configure NTP Synchronization, htop, git, curl
-RUN sudo apt-get update && sudo apt-get install -y ntp && sudo apt-get install -y htop && sudo apt-get install -y git && sudo apt-get install -y curl libcurl3 libcurl3-dev
-
-# Installing Redis
-RUN sudo apt-get install -y gcc
-RUN sudo apt-get update && sudo apt-get install -y build-essential && sudo apt-get install -y tcl8.5
-RUN wget http://download.redis.io/releases/redis-stable.tar.gz
-RUN tar xvzf redis-stable.tar.gz
-RUN cd redis-stable && make && sudo make install && cd utils && sudo ./install_server.sh
-RUN sudo rm -rf /var/run/redis_6379.pid
-
-COPY start_script.sh /home/grumpycat/
-RUN sudo chown grumpycat.grumpycat /home/grumpycat/start_script.sh && sudo chmod 755 /home/grumpycat/start_script.sh
-RUN echo 'export TERM=xterm' >> ~/.bashrc
-
-# Expose port 6379 from the container to the host
 EXPOSE 6379
-ENTRYPOINT ["./start_script.sh"]
+CMD ["redis-server"]
